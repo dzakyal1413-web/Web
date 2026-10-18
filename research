@@ -1,0 +1,351 @@
+import streamlit as st
+import pandas as pd
+import sqlite3
+import hashlib
+import hmac
+import secrets
+from pathlib import Path
+from datetime import datetime
+
+APP_DIR = Path(__file__).parent
+DB_PATH = APP_DIR / "users.db"
+
+st.set_page_config(
+    page_title="ResearchLab | Digital Research",
+    page_icon="◈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ---------- Styling ----------
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+:root { --bg:#080b12; --panel:#111827; --muted:#9ba8bd; --line:rgba(255,255,255,.10); --accent:#9aabff; }
+html, body, [class*="css"] { font-family:'DM Sans',sans-serif; }
+.stApp {
+  background:
+    radial-gradient(ellipse at 85% 0%, rgba(62,82,170,.25), transparent 33%),
+    radial-gradient(ellipse at 0% 55%, rgba(25,115,130,.13), transparent 30%),
+    var(--bg);
+  color:#f5f7ff;
+}
+.block-container { max-width:1220px; padding-top:1.7rem; padding-bottom:3rem; }
+header[data-testid="stHeader"] { background:transparent; }
+#MainMenu, footer {visibility:hidden;}
+[data-testid="stSidebar"] { background:rgba(10,14,24,.94); border-right:1px solid var(--line); }
+[data-testid="stSidebar"] * { color:#e9edfa; }
+.brand {font-family:'Space Grotesk',sans-serif;font-size:1.35rem;font-weight:700;letter-spacing:-.05em;}
+.brand span {color:var(--accent);}
+.eyebrow {color:#aebaff;text-transform:uppercase;letter-spacing:.16em;font-size:.72rem;font-weight:700;}
+.hero {
+  border:1px solid var(--line); border-radius:26px; padding:34px;
+  background:linear-gradient(125deg,rgba(142,160,255,.16),rgba(255,255,255,.025) 55%,rgba(87,213,206,.06));
+  position:relative; overflow:hidden; animation:fadeUp .7s ease both;
+}
+.hero:after {content:"";position:absolute;width:220px;height:220px;border-radius:50%;right:-60px;top:-85px;
+  background:radial-gradient(circle,rgba(150,170,255,.24),rgba(150,170,255,0) 70%);pointer-events:none;}
+.hero h1 {font-family:'Space Grotesk',sans-serif;font-size:clamp(2.3rem,5vw,4.3rem);line-height:1.04;letter-spacing:-.065em;margin:.5rem 0 1rem;}
+.gradient {background:linear-gradient(95deg,#fff 15%,#aebaff 60%,#8de8dc);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.sub {color:#b3bfd2;line-height:1.8;max-width:720px;}
+.panel {background:rgba(17,24,39,.78);border:1px solid var(--line);border-radius:19px;padding:22px;height:100%;
+  transition:transform .22s ease,border-color .22s ease,background .22s ease;animation:fadeUp .65s ease both;}
+.panel:hover {transform:translateY(-4px);border-color:rgba(154,171,255,.42);background:rgba(22,31,50,.92);}
+.panel h3 {font-family:'Space Grotesk',sans-serif;font-size:1.1rem;margin:.4rem 0 .5rem;}
+.panel p {color:var(--muted);font-size:.92rem;line-height:1.7;margin-bottom:0;}
+.kpi {background:rgba(17,24,39,.8);border:1px solid var(--line);border-radius:17px;padding:18px 20px;}
+.kpi-label {font-size:.8rem;color:var(--muted);}
+.kpi-value {font-family:'Space Grotesk',sans-serif;font-size:1.8rem;font-weight:700;letter-spacing:-.04em;margin-top:5px;}
+.kpi-note {font-size:.75rem;color:#91e0d4;margin-top:4px;}
+.section-title {font-family:'Space Grotesk',sans-serif;font-size:1.8rem;font-weight:700;letter-spacing:-.05em;margin:1.3rem 0 .35rem;}
+.section-sub {color:var(--muted);margin-bottom:1.2rem;}
+.tag {display:inline-block;border:1px solid rgba(154,171,255,.25);border-radius:999px;padding:5px 10px;color:#c7ceff;font-size:.75rem;background:rgba(154,171,255,.07);}
+.project-card {padding:22px;border-radius:19px;border:1px solid var(--line);background:linear-gradient(140deg,rgba(20,29,47,.95),rgba(13,18,30,.95));height:100%;}
+.project-card .num {color:#aebaff;font-size:.72rem;letter-spacing:.14em;}
+.project-card h3 {font-family:'Space Grotesk',sans-serif;margin:.65rem 0;}
+.project-card p {color:var(--muted);line-height:1.7;}
+.stButton > button {border-radius:12px;border:1px solid rgba(154,171,255,.45);background:#9aabff;color:#0b1020;font-weight:700;transition:all .2s ease;}
+.stButton > button:hover {background:#b8c3ff;border-color:#b8c3ff;color:#0b1020;transform:translateY(-1px);}
+.stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] {border-radius:10px;}
+hr {border-color:var(--line);}
+footer {visibility:hidden;}
+@keyframes fadeUp {from {opacity:0;transform:translateY(12px)} to {opacity:1;transform:translateY(0)}}
+@media (max-width:700px) {
+  .block-container {padding:1rem .8rem 2rem;}
+  .hero {padding:23px;border-radius:20px;}
+  .panel {padding:18px;}
+  .kpi {padding:14px;}
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *:before, *:after {animation:none !important;transition:none !important;scroll-behavior:auto !important;}
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------- Authentication helpers ----------
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+def hash_password(password: str, salt_hex: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), 310_000
+    ).hex()
+
+def register_user(username: str, password: str):
+    username = username.strip().lower()
+    if len(username) < 3 or not username.replace("_", "").replace("-", "").isalnum():
+        return False, "Username minimal 3 karakter; gunakan huruf, angka, _ atau -."
+    if len(password) < 10:
+        return False, "Password harus minimal 10 karakter."
+    salt = secrets.token_hex(16)
+    pwd_hash = hash_password(password, salt)
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO users (username, salt, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                (username, salt, pwd_hash, datetime.utcnow().isoformat(timespec="seconds")),
+            )
+            conn.commit()
+        return True, "Akun berhasil dibuat. Silakan masuk."
+    except sqlite3.IntegrityError:
+        return False, "Username sudah digunakan."
+
+def verify_user(username: str, password: str) -> bool:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT salt, password_hash FROM users WHERE username = ?",
+            (username.strip().lower(),),
+        ).fetchone()
+    if not row:
+        # Do a dummy hash to reduce timing differences for unknown users.
+        hash_password(password, "00112233445566778899aabbccddeeff")
+        return False
+    salt, expected = row
+    actual = hash_password(password, salt)
+    return hmac.compare_digest(actual, expected)
+
+init_db()
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+# ---------- Login screen ----------
+def show_auth():
+    st.markdown('<div class="brand">RESEARCH<span>LAB.</span></div>', unsafe_allow_html=True)
+    st.write("")
+    left, right = st.columns([1.15, 0.85], gap="large")
+    with left:
+        st.markdown("""
+        <div class="hero">
+          <div class="eyebrow">RESEARCH • INSIGHTS • IMPACT</div>
+          <h1>Make data<br>tell a <span class="gradient">better story.</span></h1>
+          <p class="sub">Workspace penelitian digital untuk merapikan proyek, membaca hasil survei, dan mengubah data menjadi insight yang mudah dipahami.</p>
+          <div style="margin-top:24px;display:flex;gap:9px;flex-wrap:wrap">
+            <span class="tag">Survey analytics</span><span class="tag">Project workspace</span><span class="tag">Secure password hashing</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.write("")
+        st.caption("Template demonstrasi. Buat akun untuk masuk ke dashboard.")
+    with right:
+        st.markdown('<div class="section-title">Welcome back</div><div class="section-sub">Masuk atau buat akun workspace.</div>', unsafe_allow_html=True)
+        tab_login, tab_register = st.tabs(["Masuk", "Buat akun"])
+        with tab_login:
+            with st.form("login_form"):
+                username = st.text_input("Username", placeholder="username")
+                password = st.text_input("Password", type="password", placeholder="Password")
+                submit = st.form_submit_button("Masuk ke dashboard", use_container_width=True)
+            if submit:
+                if verify_user(username, password):
+                    st.session_state.authenticated = True
+                    st.session_state.username = username.strip().lower()
+                    st.rerun()
+                else:
+                    st.error("Username atau password tidak cocok.")
+        with tab_register:
+            with st.form("register_form"):
+                new_username = st.text_input("Username baru", placeholder="misalnya peneliti_01")
+                new_password = st.text_input("Password", type="password", help="Minimal 10 karakter.")
+                confirm = st.text_input("Ulangi password", type="password")
+                create = st.form_submit_button("Buat akun", use_container_width=True)
+            if create:
+                if new_password != confirm:
+                    st.error("Konfirmasi password belum sama.")
+                else:
+                    ok, message = register_user(new_username, new_password)
+                    (st.success if ok else st.error)(message)
+
+if not st.session_state.authenticated:
+    show_auth()
+    st.stop()
+
+# ---------- App shell ----------
+with st.sidebar:
+    st.markdown('<div class="brand">RESEARCH<span>LAB.</span></div>', unsafe_allow_html=True)
+    st.caption("RESEARCH WORKSPACE")
+    page = st.radio(
+        "NAVIGATION",
+        ["Overview", "Analisis Survei", "Proyek Penelitian", "Tentang"],
+        label_visibility="visible",
+    )
+    st.divider()
+    st.markdown(f"**Pengguna:** `{st.session_state.username}`")
+    if st.button("Keluar", use_container_width=True):
+        st.session_state.authenticated = False
+        st.session_state.username = ""
+        st.rerun()
+    st.caption("Dark premium · Python + Streamlit")
+
+def section(title, subtitle):
+    st.markdown(f'<div class="section-title">{title}</div><div class="section-sub">{subtitle}</div>', unsafe_allow_html=True)
+
+if page == "Overview":
+    st.markdown(f"""
+    <div class="hero">
+      <div class="eyebrow">YOUR RESEARCH WORKSPACE</div>
+      <h1>Good afternoon,<br><span class="gradient">{st.session_state.username}.</span></h1>
+      <p class="sub">Satu ruang untuk memantau proyek, menganalisis respons survei, dan merangkum temuan penelitian secara lebih terstruktur.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.write("")
+    section("Workspace at a glance", "Ringkasan contoh untuk memperlihatkan tampilan dashboard.")
+    k1, k2, k3, k4 = st.columns(4)
+    for col, label, value, note in [
+        (k1, "Proyek aktif", "03", "2 sedang berjalan"),
+        (k2, "Responden contoh", "52", "Dataset demo"),
+        (k3, "Indikator", "04", "Pertanyaan survei"),
+        (k4, "Progress", "76%", "Contoh tampilan"),
+    ]:
+        with col:
+            st.markdown(f'<div class="kpi"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div><div class="kpi-note">{note}</div></div>', unsafe_allow_html=True)
+    st.write("")
+    section("Quick access", "Pilih area kerja untuk melanjutkan.")
+    a, b, c = st.columns(3, gap="medium")
+    with a:
+        st.markdown('<div class="panel"><div class="eyebrow">01 / DATA</div><h3>Analisis survei</h3><p>Unggah CSV, hitung ringkasan, dan visualisasikan distribusi jawaban.</p></div>', unsafe_allow_html=True)
+        if st.button("Buka analisis", key="go_analysis", use_container_width=True):
+            st.session_state["nav_jump"] = "Analisis Survei"
+            st.rerun()
+    with b:
+        st.markdown('<div class="panel"><div class="eyebrow">02 / PROJECTS</div><h3>Proyek penelitian</h3><p>Jaga gambaran tujuan, metode, dan status tiap penelitian.</p></div>', unsafe_allow_html=True)
+        if st.button("Lihat proyek", key="go_projects", use_container_width=True):
+            st.session_state["nav_jump"] = "Proyek Penelitian"
+            st.rerun()
+    with c:
+        st.markdown('<div class="panel"><div class="eyebrow">03 / NOTES</div><h3>Catatan metode</h3><p>Gunakan data secara bertanggung jawab dan hindari klaim yang melampaui hasil.</p></div>', unsafe_allow_html=True)
+        if st.button("Tentang workspace", key="go_about", use_container_width=True):
+            st.session_state["nav_jump"] = "Tentang"
+            st.rerun()
+    st.caption("Catatan: angka di dashboard Overview adalah data contoh, bukan hasil analisis otomatis dari dataset pengguna.")
+
+elif page == "Analisis Survei":
+    section("Analisis survei", "Unggah file CSV hasil ekspor Google Forms untuk melihat ringkasan data.")
+    uploaded = st.file_uploader("Unggah file CSV", type=["csv"], help="Ekspor respons Google Forms sebagai CSV terlebih dahulu.")
+    if uploaded is not None:
+        try:
+            df = pd.read_csv(uploaded)
+            st.success(f"Dataset berhasil dibaca: {len(df):,} baris × {len(df.columns):,} kolom.")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Jumlah responden", f"{len(df):,}")
+            m2.metric("Jumlah kolom", f"{len(df.columns):,}")
+            m3.metric("Data kosong", f"{int(df.isna().sum().sum()):,}")
+            with st.expander("Lihat pratinjau data", expanded=True):
+                st.dataframe(df.head(100), use_container_width=True)
+            cols = df.select_dtypes(include="number").columns.tolist()
+            if cols:
+                chosen = st.selectbox("Pilih kolom numerik untuk dianalisis", cols)
+                counts = df[chosen].value_counts(dropna=False).sort_index()
+                st.markdown("#### Distribusi jawaban")
+                st.bar_chart(counts)
+                summary = df[chosen].describe().to_frame("Statistik")
+                st.dataframe(summary, use_container_width=True)
+            else:
+                st.info("Kolom numerik tidak terdeteksi. Jika jawaban Likert tersimpan sebagai teks, ubah atau petakan nilainya ke angka sebelum membuat statistik numerik.")
+            csv_bytes = df.describe(include="all").transpose().to_csv().encode("utf-8")
+            st.download_button("Unduh ringkasan CSV", data=csv_bytes, file_name="ringkasan_survei.csv", mime="text/csv")
+        except Exception as exc:
+            st.error(f"File CSV tidak dapat dibaca. Periksa format file. Detail: {exc}")
+    else:
+        st.markdown("""
+        <div class="panel">
+          <div class="eyebrow">HOW IT WORKS</div>
+          <h3>Mulai dari data yang kamu miliki</h3>
+          <p>1. Buka Google Forms dan ekspor respons ke CSV.<br>
+          2. Unggah file menggunakan tombol di atas.<br>
+          3. Periksa jumlah responden, kolom, data kosong, lalu pilih kolom numerik untuk grafik distribusi.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        demo = pd.DataFrame({"Skor": [1,2,3,4,5], "Jumlah contoh": [2,4,8,16,22]}).set_index("Skor")
+        st.caption("Contoh distribusi jawaban — data ilustrasi, bukan data survei nyata.")
+        st.bar_chart(demo)
+
+elif page == "Proyek Penelitian":
+    section("Proyek penelitian", "Contoh kartu proyek. Ubah judul, ringkasan, dan status sesuai penelitianmu.")
+    p1, p2 = st.columns(2, gap="medium")
+    with p1:
+        st.markdown("""
+        <div class="project-card">
+          <div class="num">PROJECT 01 · ECONOMICS</div>
+          <h3>Perilaku Konsumsi Digital Generasi Muda</h3>
+          <p>Mengkaji keterkaitan kondisi ekonomi, kebijakan, literasi keuangan, dan psikologi konsumen dalam keputusan konsumsi digital.</p>
+          <span class="tag">Survei online</span> <span class="tag">52 responden · contoh</span>
+        </div>
+        """, unsafe_allow_html=True)
+    with p2:
+        st.markdown("""
+        <div class="project-card">
+          <div class="num">PROJECT 02 · DIGITAL LITERACY</div>
+          <h3>Literasi Keuangan dan Keputusan Digital</h3>
+          <p>Contoh ruang kerja untuk menyusun pertanyaan penelitian, mengelola data, dan merangkum temuan secara terukur.</p>
+          <span class="tag">Research planning</span> <span class="tag">Draft</span>
+        </div>
+        """, unsafe_allow_html=True)
+    st.write("")
+    st.markdown("""
+    <div class="project-card">
+      <div class="num">PROJECT 03 · WEB DEVELOPMENT</div>
+      <h3>ResearchLab Dashboard</h3>
+      <p>Aplikasi ini sendiri: sebuah dashboard untuk membantu peneliti mengelola proyek dan melihat ringkasan data survei.</p>
+      <span class="tag">Python</span> <span class="tag">Streamlit</span> <span class="tag">CSV analytics</span>
+    </div>
+    """, unsafe_allow_html=True)
+    st.write("")
+    with st.expander("Tambah catatan proyek pribadi"):
+        title = st.text_input("Judul proyek")
+        status = st.selectbox("Status", ["Perencanaan", "Pengumpulan data", "Analisis", "Selesai"])
+        note = st.text_area("Catatan")
+        if st.button("Simpan catatan di sesi ini"):
+            st.session_state["project_note"] = {"title": title, "status": status, "note": note}
+            st.success("Catatan disimpan sementara selama sesi aplikasi ini aktif.")
+        if "project_note" in st.session_state:
+            st.write(st.session_state["project_note"])
+
+elif page == "Tentang":
+    section("Tentang ResearchLab", "Starter dashboard penelitian dengan fokus pada keterbacaan dan alur kerja.")
+    st.markdown("""
+    <div class="panel">
+      <h3>Yang tersedia</h3>
+      <p>• Login dan pembuatan akun lokal dengan password yang di-hash.<br>
+      • Dashboard dengan kartu ringkasan dan navigasi.<br>
+      • Unggah CSV dan pratinjau data survei.<br>
+      • Grafik distribusi kolom numerik dan ringkasan statistik.<br>
+      • Kartu proyek penelitian dan catatan sementara.<br>
+      • Tampilan dark premium, animasi halus, dan layout responsif.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.warning("Penting: autentikasi ini adalah contoh dasar. Database SQLite lokal dan sesi Streamlit tidak cukup untuk kebutuhan produksi yang sensitif. Untuk penggunaan publik sungguhan, gunakan autentikasi terkelola, penyimpanan persisten, HTTPS, pembatasan percobaan login, kebijakan privasi, dan pengujian keamanan.")
+
+st.markdown("<hr>", unsafe_allow_html=True)
+st.caption("RESEARCHLAB © 2026 · Python + Streamlit · Data contoh diberi label secara eksplisit.")
+
